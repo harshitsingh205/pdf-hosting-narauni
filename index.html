@@ -112,7 +112,7 @@
             cursor: not-allowed;
         }
 
-        /* PDF Display Area */
+        /* PDF Display Area - FIXED SCALING */
         .pdf-display {
             flex: 1;
             display: flex;
@@ -121,6 +121,15 @@
             overflow: auto;
             background: #FAFAFA;
             padding: 20px;
+            position: relative;
+        }
+
+        .pdf-canvas-wrapper {
+            max-width: 100%;
+            max-height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
             position: relative;
         }
 
@@ -134,12 +143,12 @@
 
         #pdfCanvas {
             display: block;
-            /* Prevent blurriness on canvas scaling */
-            image-rendering: -moz-crisp-edges;
+            max-width: 100%;
+            max-height: 100%;
+            /* Improved scaling properties */
+            object-fit: contain;
             image-rendering: -webkit-optimize-contrast;
             image-rendering: crisp-edges;
-            image-rendering: pixelated;
-            -ms-interpolation-mode: nearest-neighbor;
         }
 
         /* Navigation */
@@ -261,6 +270,15 @@
             to { transform: rotate(360deg); }
         }
 
+        /* Zoom Level Display */
+        .zoom-level {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-left: 8px;
+            min-width: 40px;
+            text-align: center;
+        }
+
         /* Responsive Design */
         @media (max-width: 768px) {
             .controls-bar {
@@ -348,6 +366,21 @@
             image-rendering: crisp-edges;
             image-rendering: pixelated;
         }
+
+        /* Scale Info */
+        .scale-info {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            opacity: 0.7;
+            pointer-events: none;
+            z-index: 5;
+        }
     </style>
 </head>
 <body>
@@ -369,6 +402,7 @@
                 <button class="control-btn" id="zoomInBtn" title="Zoom In">
                     <i class="fas fa-search-plus"></i>
                 </button>
+                <span class="zoom-level" id="zoomLevel">100%</span>
             </div>
         </div>
 
@@ -379,8 +413,11 @@
                 <div id="loadingText">Loading...</div>
             </div>
             
-            <div class="pdf-canvas-container">
-                <canvas id="pdfCanvas"></canvas>
+            <div class="pdf-canvas-wrapper">
+                <div class="pdf-canvas-container">
+                    <canvas id="pdfCanvas"></canvas>
+                    <div class="scale-info" id="scaleInfo"></div>
+                </div>
             </div>
         </div>
 
@@ -423,8 +460,10 @@
             pdfPath: 'tree-compressed.pdf', // Change this to your PDF path
             zoomLevels: [50, 75, 100, 125, 150, 200, 300, 400],
             defaultZoomIndex: 2, // 100%
-            quality: 'high', // 'high' or 'medium' - affects rendering quality
-            maxCanvasSize: 4096 * 2 // Increased for better quality
+            quality: 'high', // 'high' or 'medium'
+            autoScale: true, // Automatically scale to fit container
+            fitToWidth: false, // Set to true to fit width, false to fit height
+            maxScale: 5 // Maximum zoom scale factor
         };
 
         // State Management
@@ -434,8 +473,9 @@
             totalPages: 0,
             zoomIndex: CONFIG.defaultZoomIndex,
             isRendering: false,
-            renderQueue: null,
-            pixelRatio: window.devicePixelRatio || 1
+            pixelRatio: window.devicePixelRatio || 1,
+            containerWidth: 0,
+            containerHeight: 0
         };
 
         // DOM Elements
@@ -450,11 +490,14 @@
             zoomInBtn: document.getElementById('zoomInBtn'),
             zoomOutBtn: document.getElementById('zoomOutBtn'),
             zoomResetBtn: document.getElementById('zoomResetBtn'),
+            zoomLevel: document.getElementById('zoomLevel'),
             loadingOverlay: document.getElementById('loadingOverlay'),
-            loadingText: document.getElementById('loadingText')
+            loadingText: document.getElementById('loadingText'),
+            scaleInfo: document.getElementById('scaleInfo'),
+            pdfDisplay: document.querySelector('.pdf-display')
         };
 
-        // Initialize PDF.js with High DPI support
+        // Initialize PDF.js
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
         // Initialize Application
@@ -471,7 +514,10 @@
                 elements.pageInput.max = state.totalPages;
                 elements.pageInput.value = state.currentPage;
                 
-                // Render first page with high quality
+                // Get container dimensions
+                updateContainerSize();
+                
+                // Render first page
                 await renderPage(state.currentPage);
                 
                 // Setup event listeners
@@ -489,7 +535,24 @@
             }
         }
 
-        // High Quality Page Rendering
+        // Calculate optimal scale to fit container
+        function calculateOptimalScale(viewport, containerWidth, containerHeight) {
+            if (CONFIG.autoScale) {
+                if (CONFIG.fitToWidth) {
+                    // Fit to width
+                    const scale = containerWidth / viewport.width;
+                    return Math.min(scale, CONFIG.maxScale);
+                } else {
+                    // Fit to height (default)
+                    const scale = containerHeight / viewport.height;
+                    return Math.min(scale, CONFIG.maxScale);
+                }
+            }
+            // Use manual zoom
+            return CONFIG.zoomLevels[state.zoomIndex] / 100;
+        }
+
+        // Render Page with Proper Scaling
         async function renderPage(pageNum) {
             if (state.isRendering || !state.pdf) return;
             
@@ -499,68 +562,76 @@
             try {
                 const page = await state.pdf.getPage(pageNum);
                 
-                // Calculate optimal scale with DPI consideration
-                const baseScale = CONFIG.zoomLevels[state.zoomIndex] / 100;
+                // Get the page's natural viewport
+                const naturalViewport = page.getViewport({ scale: 1 });
                 
-                // Use higher pixel ratio for better quality
-                const pixelRatio = CONFIG.quality === 'high' 
+                // Get current container size
+                updateContainerSize();
+                const containerWidth = state.containerWidth;
+                const containerHeight = state.containerHeight;
+                
+                // Calculate scale based on current zoom level and auto-scaling
+                let scale;
+                if (state.zoomIndex === CONFIG.defaultZoomIndex && CONFIG.autoScale) {
+                    // Auto-scale when at default zoom
+                    scale = calculateOptimalScale(naturalViewport, containerWidth - 40, containerHeight - 40);
+                    // Adjust scale to match zoom levels
+                    const closestZoom = CONFIG.zoomLevels.find(z => (z/100) >= scale) || CONFIG.zoomLevels[CONFIG.zoomLevels.length - 1];
+                    scale = closestZoom / 100;
+                } else {
+                    // Use manual zoom
+                    scale = CONFIG.zoomLevels[state.zoomIndex] / 100;
+                }
+                
+                // Create viewport with calculated scale
+                const viewport = page.getViewport({ scale });
+                
+                // Set up canvas with proper dimensions
+                const outputScale = CONFIG.quality === 'high' 
                     ? Math.min(state.pixelRatio * 1.5, 3) 
                     : state.pixelRatio;
                 
-                // Calculate viewport
-                const viewport = page.getViewport({ scale: baseScale });
-                
-                // Set canvas dimensions with high DPI
-                const outputScale = pixelRatio;
                 const canvasWidth = Math.floor(viewport.width * outputScale);
                 const canvasHeight = Math.floor(viewport.height * outputScale);
                 
-                // Ensure canvas doesn't exceed maximum size
-                const maxSize = CONFIG.maxCanvasSize;
-                if (canvasWidth > maxSize || canvasHeight > maxSize) {
-                    const scaleFactor = maxSize / Math.max(canvasWidth, canvasHeight);
-                    outputScale = outputScale * scaleFactor;
-                    elements.canvas.width = Math.floor(viewport.width * outputScale);
-                    elements.canvas.height = Math.floor(viewport.height * outputScale);
-                } else {
-                    elements.canvas.width = canvasWidth;
-                    elements.canvas.height = canvasHeight;
-                }
+                // Set canvas physical dimensions
+                elements.canvas.width = canvasWidth;
+                elements.canvas.height = canvasHeight;
                 
-                // Set CSS dimensions (actual display size)
+                // Set canvas display dimensions (CSS)
                 elements.canvas.style.width = viewport.width + 'px';
                 elements.canvas.style.height = viewport.height + 'px';
                 
-                // Apply high DPI rendering context
+                // Clear canvas context
                 const context = elements.canvas.getContext('2d', {
                     alpha: false,
-                    desynchronized: true // Better performance
+                    desynchronized: true
                 });
                 
-                // Clear and scale context
-                context.clearRect(0, 0, elements.canvas.width, elements.canvas.height);
+                context.clearRect(0, 0, canvasWidth, canvasHeight);
                 context.scale(outputScale, outputScale);
                 
-                // Configure rendering for quality
-                const renderContext = {
+                // Render the page
+                await page.render({
                     canvasContext: context,
                     viewport: viewport,
                     enableWebGL: true,
                     renderInteractiveForms: false,
-                    intent: 'print' // Higher quality rendering
-                };
-                
-                // Render page
-                await page.render(renderContext).promise;
+                    intent: 'display'
+                }).promise;
                 
                 // Update state and UI
                 state.currentPage = pageNum;
                 elements.currentPage.textContent = pageNum;
                 elements.pageInput.value = pageNum;
-                updateNavButtons();
+                elements.zoomLevel.textContent = `${Math.round(scale * 100)}%`;
                 
-                // Force canvas to use crisp rendering
-                elements.canvas.classList.add('high-dpi-canvas');
+                // Update scale info
+                const actualScale = Math.round(scale * 100);
+                const containerFit = viewport.width <= containerWidth && viewport.height <= containerHeight;
+                elements.scaleInfo.textContent = `${actualScale}% ${containerFit ? '✓' : '!'}`;
+                
+                updateNavButtons();
                 
                 // Update URL hash
                 history.replaceState(null, null, `#page=${pageNum}`);
@@ -572,6 +643,13 @@
                 state.isRendering = false;
                 hideLoading();
             }
+        }
+
+        // Update container size
+        function updateContainerSize() {
+            const rect = elements.pdfDisplay.getBoundingClientRect();
+            state.containerWidth = rect.width - 40; // Account for padding
+            state.containerHeight = rect.height - 40;
         }
 
         // Navigation Functions
@@ -594,7 +672,7 @@
             }
         }
 
-        // Zoom Functions with Quality Considerations
+        // Zoom Functions
         function zoomIn() {
             if (state.zoomIndex < CONFIG.zoomLevels.length - 1) {
                 state.zoomIndex++;
@@ -699,8 +777,8 @@
             });
             
             // Touch Events
-            elements.canvas.addEventListener('touchstart', handleTouchStart, { passive: true });
-            elements.canvas.addEventListener('touchend', handleTouchEnd, { passive: true });
+            elements.pdfDisplay.addEventListener('touchstart', handleTouchStart, { passive: true });
+            elements.pdfDisplay.addEventListener('touchend', handleTouchEnd, { passive: true });
             
             // Keyboard Navigation
             document.addEventListener('keydown', (e) => {
@@ -743,7 +821,7 @@
             
             // Double Tap to Reset Zoom
             let lastTap = 0;
-            elements.canvas.addEventListener('touchend', (e) => {
+            elements.pdfDisplay.addEventListener('touchend', (e) => {
                 const currentTime = new Date().getTime();
                 const tapLength = currentTime - lastTap;
                 
@@ -759,18 +837,32 @@
             window.addEventListener('resize', () => {
                 clearTimeout(resizeTimer);
                 resizeTimer = setTimeout(() => {
+                    updateContainerSize();
                     if (!state.isRendering) {
                         renderPage(state.currentPage);
                     }
-                }, 250);
+                }, 100);
             });
             
             // Handle Page Visibility
             document.addEventListener('visibilitychange', () => {
                 if (!document.hidden && !state.isRendering) {
+                    updateContainerSize();
                     renderPage(state.currentPage);
                 }
             });
+            
+            // Mouse wheel zoom
+            elements.pdfDisplay.addEventListener('wheel', (e) => {
+                if (e.ctrlKey || e.metaKey) {
+                    e.preventDefault();
+                    if (e.deltaY < 0) {
+                        zoomIn();
+                    } else {
+                        zoomOut();
+                    }
+                }
+            }, { passive: false });
         }
 
         // Initialize Application
@@ -787,6 +879,11 @@
                 }
             }
         });
+        
+        // Force initial container size update after a short delay
+        setTimeout(() => {
+            updateContainerSize();
+        }, 100);
     </script>
 </body>
 </html>
