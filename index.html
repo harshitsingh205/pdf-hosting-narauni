@@ -37,6 +37,10 @@
         body {
             display: flex;
             flex-direction: column;
+            overflow: hidden;
+            position: fixed;
+            width: 100%;
+            height: 100%;
         }
 
         /* Main Container */
@@ -46,6 +50,7 @@
             flex-direction: column;
             overflow: hidden;
             position: relative;
+            height: 100%;
         }
 
         /* Controls Bar */
@@ -99,6 +104,7 @@
             cursor: pointer;
             font-size: 12px;
             transition: all 0.2s ease;
+            touch-action: manipulation;
         }
 
         .control-btn:hover:not(:disabled) {
@@ -112,16 +118,19 @@
             cursor: not-allowed;
         }
 
-        /* PDF Display Area - NO SCROLLING */
+        /* PDF Display Area - COMPLETELY NO SCROLLING */
         .pdf-display {
             flex: 1;
             display: flex;
             justify-content: center;
             align-items: center;
-            overflow: hidden;
+            overflow: hidden !important;
             background: #FAFAFA;
             padding: 20px;
             position: relative;
+            touch-action: none;
+            width: 100%;
+            height: 100%;
         }
 
         .pdf-canvas-wrapper {
@@ -131,7 +140,10 @@
             justify-content: center;
             align-items: center;
             position: relative;
-            overflow: hidden;
+            overflow: hidden !important;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
         }
 
         .pdf-canvas-container {
@@ -139,7 +151,8 @@
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
             background: white;
             border-radius: 2px;
-            overflow: hidden;
+            overflow: hidden !important;
+            touch-action: none;
             display: flex;
             justify-content: center;
             align-items: center;
@@ -147,13 +160,13 @@
 
         #pdfCanvas {
             display: block;
-            max-width: 100%;
-            max-height: 100%;
+            max-width: 100% !important;
+            max-height: 100% !important;
             object-fit: contain;
             image-rendering: -webkit-optimize-contrast;
             image-rendering: crisp-edges;
-            width: auto;
-            height: auto;
+            touch-action: none;
+            pointer-events: none;
         }
 
         /* Navigation */
@@ -188,6 +201,7 @@
             gap: 6px;
             min-width: 120px;
             justify-content: center;
+            touch-action: manipulation;
         }
 
         .nav-btn:hover:not(:disabled) {
@@ -380,12 +394,6 @@
                 flex-direction: column;
             }
         }
-
-        /* High DPI Canvas Fix */
-        .high-dpi-canvas {
-            image-rendering: crisp-edges;
-            image-rendering: pixelated;
-        }
     </style>
 </head>
 <body>
@@ -412,7 +420,7 @@
         </div>
 
         <!-- PDF Display -->
-        <div class="pdf-display">
+        <div class="pdf-display" id="pdfDisplay">
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="loading-spinner"></div>
                 <div id="loadingText">Loading...</div>
@@ -480,9 +488,7 @@
             isRendering: false,
             pixelRatio: window.devicePixelRatio || 1,
             containerWidth: 0,
-            containerHeight: 0,
-            touchStartX: 0,
-            touchStartY: 0
+            containerHeight: 0
         };
 
         // DOM Elements
@@ -501,15 +507,48 @@
             loadingOverlay: document.getElementById('loadingOverlay'),
             loadingText: document.getElementById('loadingText'),
             scaleInfo: document.getElementById('scaleInfo'),
-            pdfDisplay: document.querySelector('.pdf-display')
+            pdfDisplay: document.getElementById('pdfDisplay'),
+            body: document.body,
+            html: document.documentElement
         };
 
         // Initialize PDF.js
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
+        // Disable ALL scrolling and touch gestures on the page
+        function disableAllScrolling() {
+            // Prevent all default touch behaviors
+            const preventDefault = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+            };
+            
+            // Disable all touch gestures that could cause scrolling
+            const events = ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'wheel', 'scroll'];
+            
+            events.forEach(eventType => {
+                document.addEventListener(eventType, preventDefault, { passive: false });
+                elements.pdfDisplay.addEventListener(eventType, preventDefault, { passive: false });
+                elements.canvas.addEventListener(eventType, preventDefault, { passive: false });
+            });
+            
+            // Also disable dragging
+            document.addEventListener('dragstart', preventDefault);
+            elements.canvas.addEventListener('dragstart', preventDefault);
+            
+            // Force no overflow
+            document.body.style.overflow = 'hidden';
+            document.documentElement.style.overflow = 'hidden';
+            elements.pdfDisplay.style.overflow = 'hidden';
+        }
+
         // Initialize Application
         async function initApp() {
             showLoading('Loading PDF...');
+            
+            // First, disable ALL scrolling
+            disableAllScrolling();
             
             try {
                 // Load PDF document
@@ -527,7 +566,7 @@
                 // Render first page
                 await renderPage(state.currentPage);
                 
-                // Setup event listeners
+                // Setup event listeners (only for buttons)
                 setupEventListeners();
                 
                 // Update button states
@@ -559,7 +598,7 @@
             return CONFIG.zoomLevels[state.zoomIndex] / 100;
         }
 
-        // Render Page with Proper Scaling - Ensure it fits within container
+        // Render Page with Proper Scaling - Ensure it ALWAYS fits within container
         async function renderPage(pageNum) {
             if (state.isRendering || !state.pdf) return;
             
@@ -593,25 +632,20 @@
                 // Create viewport with calculated scale
                 const viewport = page.getViewport({ scale });
                 
-                // Ensure the canvas doesn't exceed container dimensions
-                const maxWidth = containerWidth - 20;
-                const maxHeight = containerHeight - 20;
+                // ENSURE the canvas never exceeds container dimensions
+                const maxWidth = containerWidth;
+                const maxHeight = containerHeight;
                 
-                // Adjust scale if needed to fit within container
+                // If viewport is larger than container, scale it down
                 if (viewport.width > maxWidth || viewport.height > maxHeight) {
                     const widthScale = maxWidth / viewport.width;
                     const heightScale = maxHeight / viewport.height;
                     const adjustScale = Math.min(widthScale, heightScale);
-                    
-                    // Don't adjust if we're manually zooming in
-                    if (state.zoomIndex === CONFIG.defaultZoomIndex || adjustScale < 1) {
-                        scale *= adjustScale;
-                    }
+                    scale *= adjustScale;
                 }
                 
-                // Recreate viewport with adjusted scale if needed
-                const finalViewport = scale !== viewport.scale ? 
-                    page.getViewport({ scale }) : viewport;
+                // Recreate viewport with adjusted scale
+                const finalViewport = page.getViewport({ scale });
                 
                 // Set up canvas with proper dimensions
                 const outputScale = CONFIG.quality === 'high' 
@@ -625,12 +659,9 @@
                 elements.canvas.width = canvasWidth;
                 elements.canvas.height = canvasHeight;
                 
-                // Set canvas display dimensions (CSS) - Ensure it fits in container
-                const displayWidth = Math.min(finalViewport.width, maxWidth);
-                const displayHeight = Math.min(finalViewport.height, maxHeight);
-                
-                elements.canvas.style.width = displayWidth + 'px';
-                elements.canvas.style.height = displayHeight + 'px';
+                // Set canvas display dimensions (CSS) - Force fit within container
+                elements.canvas.style.width = Math.min(finalViewport.width, maxWidth) + 'px';
+                elements.canvas.style.height = Math.min(finalViewport.height, maxHeight) + 'px';
                 
                 // Clear canvas context
                 const context = elements.canvas.getContext('2d', {
@@ -769,47 +800,7 @@
             elements.loadingOverlay.style.display = 'flex';
         }
 
-        // Touch Gesture Handling - ONLY for page navigation
-        function handleTouchStart(e) {
-            // Only track if single touch
-            if (e.touches.length === 1) {
-                state.touchStartX = e.touches[0].clientX;
-                state.touchStartY = e.touches[0].clientY;
-            }
-        }
-
-        function handleTouchEnd(e) {
-            if (!state.touchStartX || !state.touchStartY || e.touches.length > 0) return;
-            
-            const touch = e.changedTouches[0];
-            const diffX = touch.clientX - state.touchStartX;
-            const diffY = touch.clientY - state.touchStartY;
-            
-            // Only trigger page change if horizontal swipe is dominant
-            if (Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > 50) {
-                e.preventDefault();
-                if (diffX > 0) {
-                    goToPrevPage();
-                } else {
-                    goToNextPage();
-                }
-            }
-            
-            state.touchStartX = 0;
-            state.touchStartY = 0;
-        }
-
-        // Prevent scrolling but allow zoom gestures
-        function handleTouchMove(e) {
-            // Only prevent scrolling if it's not a zoom gesture (pinch zoom)
-            if (e.touches.length === 1) {
-                // Single touch - prevent scrolling
-                e.preventDefault();
-            }
-            // For 2+ touches (pinch zoom), allow the default behavior
-        }
-
-        // Setup Event Listeners
+        // Setup Event Listeners - ONLY for buttons, NO touch/swipe navigation
         function setupEventListeners() {
             // Button Events
             elements.prevBtn.addEventListener('click', goToPrevPage);
@@ -825,19 +816,7 @@
                 if (e.key === 'Enter') goToPage();
             });
             
-            // Touch Events - Prevent scrolling but allow zoom
-            elements.pdfDisplay.addEventListener('touchstart', handleTouchStart, { passive: true });
-            elements.pdfDisplay.addEventListener('touchend', handleTouchEnd, { passive: false });
-            elements.pdfDisplay.addEventListener('touchmove', handleTouchMove, { passive: false });
-            
-            // Prevent scrolling on canvas
-            elements.canvas.addEventListener('touchmove', (e) => {
-                if (e.touches.length === 1) {
-                    e.preventDefault();
-                }
-            }, { passive: false });
-            
-            // Keyboard Navigation
+            // Keyboard Navigation (only arrow keys for page navigation)
             document.addEventListener('keydown', (e) => {
                 if (e.target === elements.pageInput) return;
                 
@@ -876,19 +855,6 @@
                 }
             });
             
-            // Double Tap to Reset Zoom
-            let lastTap = 0;
-            elements.pdfDisplay.addEventListener('touchend', (e) => {
-                const currentTime = new Date().getTime();
-                const tapLength = currentTime - lastTap;
-                
-                if (tapLength < 300 && tapLength > 0) {
-                    e.preventDefault();
-                    resetZoom();
-                }
-                lastTap = currentTime;
-            });
-            
             // Handle Window Resize with Debouncing
             let resizeTimer;
             window.addEventListener('resize', () => {
@@ -908,22 +874,6 @@
                     renderPage(state.currentPage);
                 }
             });
-            
-            // Mouse wheel zoom - allow zoom but prevent scrolling
-            elements.pdfDisplay.addEventListener('wheel', (e) => {
-                if (e.ctrlKey || e.metaKey) {
-                    // Ctrl/Cmd + wheel for zoom
-                    e.preventDefault();
-                    if (e.deltaY < 0) {
-                        zoomIn();
-                    } else {
-                        zoomOut();
-                    }
-                } else {
-                    // Regular wheel - prevent scrolling
-                    e.preventDefault();
-                }
-            }, { passive: false });
         }
 
         // Initialize Application
@@ -944,7 +894,12 @@
         // Force initial container size update after a short delay
         setTimeout(() => {
             updateContainerSize();
+            // Re-disable scrolling
+            disableAllScrolling();
         }, 100);
+        
+        // Also disable scrolling when page loads completely
+        window.addEventListener('load', disableAllScrolling);
     </script>
 </body>
 </html>
