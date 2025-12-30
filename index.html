@@ -1,4 +1,4 @@
-\<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -739,27 +739,6 @@
             elements.loadingOverlay.style.display = 'flex';
         }
 
-        // Touch Gesture Handling
-        function handleTouchStart(e) {
-            state.touchStartX = e.touches[0].clientX;
-        }
-
-        function handleTouchEnd(e) {
-            if (!state.touchStartX) return;
-            
-            const diffX = e.changedTouches[0].clientX - state.touchStartX;
-            
-            if (Math.abs(diffX) > 50) {
-                if (diffX > 0) {
-                    goToPrevPage();
-                } else {
-                    goToNextPage();
-                }
-            }
-            
-            state.touchStartX = 0;
-        }
-
         // Setup Event Listeners
         function setupEventListeners() {
             // Button Events
@@ -775,10 +754,6 @@
             elements.pageInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') goToPage();
             });
-            
-            // Touch Events
-            elements.pdfDisplay.addEventListener('touchstart', handleTouchStart, { passive: true });
-            elements.pdfDisplay.addEventListener('touchend', handleTouchEnd, { passive: true });
             
             // Keyboard Navigation
             document.addEventListener('keydown', (e) => {
