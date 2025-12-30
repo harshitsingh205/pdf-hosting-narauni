@@ -112,17 +112,16 @@
             cursor: not-allowed;
         }
 
-        /* PDF Display Area - FIXED SCALING */
+        /* PDF Display Area - NO SCROLLING */
         .pdf-display {
             flex: 1;
             display: flex;
             justify-content: center;
             align-items: center;
-            overflow: hidden; /* Changed from 'auto' to 'hidden' */
+            overflow: hidden;
             background: #FAFAFA;
             padding: 20px;
             position: relative;
-            touch-action: pan-y; /* Allow only vertical panning */
         }
 
         .pdf-canvas-wrapper {
@@ -132,7 +131,7 @@
             justify-content: center;
             align-items: center;
             position: relative;
-            overflow: hidden; /* Add this to prevent any overflow */
+            overflow: hidden;
         }
 
         .pdf-canvas-container {
@@ -140,18 +139,21 @@
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
             background: white;
             border-radius: 2px;
-            overflow: hidden; /* Changed from 'visible' to 'hidden' */
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
 
         #pdfCanvas {
             display: block;
             max-width: 100%;
             max-height: 100%;
-            /* Improved scaling properties */
             object-fit: contain;
             image-rendering: -webkit-optimize-contrast;
             image-rendering: crisp-edges;
-            touch-action: none; /* Disable all touch gestures on canvas */
+            width: auto;
+            height: auto;
         }
 
         /* Navigation */
@@ -545,11 +547,11 @@
             if (CONFIG.autoScale) {
                 if (CONFIG.fitToWidth) {
                     // Fit to width
-                    const scale = containerWidth / viewport.width;
+                    const scale = (containerWidth - 20) / viewport.width;
                     return Math.min(scale, CONFIG.maxScale);
                 } else {
                     // Fit to height (default)
-                    const scale = containerHeight / viewport.height;
+                    const scale = (containerHeight - 20) / viewport.height;
                     return Math.min(scale, CONFIG.maxScale);
                 }
             }
@@ -557,7 +559,7 @@
             return CONFIG.zoomLevels[state.zoomIndex] / 100;
         }
 
-        // Render Page with Proper Scaling
+        // Render Page with Proper Scaling - Ensure it fits within container
         async function renderPage(pageNum) {
             if (state.isRendering || !state.pdf) return;
             
@@ -579,7 +581,7 @@
                 let scale;
                 if (state.zoomIndex === CONFIG.defaultZoomIndex && CONFIG.autoScale) {
                     // Auto-scale when at default zoom
-                    scale = calculateOptimalScale(naturalViewport, containerWidth - 40, containerHeight - 40);
+                    scale = calculateOptimalScale(naturalViewport, containerWidth, containerHeight);
                     // Adjust scale to match zoom levels
                     const closestZoom = CONFIG.zoomLevels.find(z => (z/100) >= scale) || CONFIG.zoomLevels[CONFIG.zoomLevels.length - 1];
                     scale = closestZoom / 100;
@@ -591,21 +593,44 @@
                 // Create viewport with calculated scale
                 const viewport = page.getViewport({ scale });
                 
+                // Ensure the canvas doesn't exceed container dimensions
+                const maxWidth = containerWidth - 20;
+                const maxHeight = containerHeight - 20;
+                
+                // Adjust scale if needed to fit within container
+                if (viewport.width > maxWidth || viewport.height > maxHeight) {
+                    const widthScale = maxWidth / viewport.width;
+                    const heightScale = maxHeight / viewport.height;
+                    const adjustScale = Math.min(widthScale, heightScale);
+                    
+                    // Don't adjust if we're manually zooming in
+                    if (state.zoomIndex === CONFIG.defaultZoomIndex || adjustScale < 1) {
+                        scale *= adjustScale;
+                    }
+                }
+                
+                // Recreate viewport with adjusted scale if needed
+                const finalViewport = scale !== viewport.scale ? 
+                    page.getViewport({ scale }) : viewport;
+                
                 // Set up canvas with proper dimensions
                 const outputScale = CONFIG.quality === 'high' 
                     ? Math.min(state.pixelRatio * 1.5, 3) 
                     : state.pixelRatio;
                 
-                const canvasWidth = Math.floor(viewport.width * outputScale);
-                const canvasHeight = Math.floor(viewport.height * outputScale);
+                const canvasWidth = Math.floor(finalViewport.width * outputScale);
+                const canvasHeight = Math.floor(finalViewport.height * outputScale);
                 
                 // Set canvas physical dimensions
                 elements.canvas.width = canvasWidth;
                 elements.canvas.height = canvasHeight;
                 
-                // Set canvas display dimensions (CSS)
-                elements.canvas.style.width = viewport.width + 'px';
-                elements.canvas.style.height = viewport.height + 'px';
+                // Set canvas display dimensions (CSS) - Ensure it fits in container
+                const displayWidth = Math.min(finalViewport.width, maxWidth);
+                const displayHeight = Math.min(finalViewport.height, maxHeight);
+                
+                elements.canvas.style.width = displayWidth + 'px';
+                elements.canvas.style.height = displayHeight + 'px';
                 
                 // Clear canvas context
                 const context = elements.canvas.getContext('2d', {
@@ -619,7 +644,7 @@
                 // Render the page
                 await page.render({
                     canvasContext: context,
-                    viewport: viewport,
+                    viewport: finalViewport,
                     enableWebGL: true,
                     renderInteractiveForms: false,
                     intent: 'display'
@@ -633,7 +658,7 @@
                 
                 // Update scale info
                 const actualScale = Math.round(scale * 100);
-                const containerFit = viewport.width <= containerWidth && viewport.height <= containerHeight;
+                const containerFit = finalViewport.width <= containerWidth && finalViewport.height <= containerHeight;
                 elements.scaleInfo.textContent = `${actualScale}% ${containerFit ? '✓' : '!'}`;
                 
                 updateNavButtons();
@@ -653,8 +678,8 @@
         // Update container size
         function updateContainerSize() {
             const rect = elements.pdfDisplay.getBoundingClientRect();
-            state.containerWidth = rect.width - 40; // Account for padding
-            state.containerHeight = rect.height - 40;
+            state.containerWidth = rect.width;
+            state.containerHeight = rect.height;
         }
 
         // Navigation Functions
@@ -744,7 +769,7 @@
             elements.loadingOverlay.style.display = 'flex';
         }
 
-        // Touch Gesture Handling
+        // Touch Gesture Handling - ONLY for page navigation
         function handleTouchStart(e) {
             // Only track if single touch
             if (e.touches.length === 1) {
@@ -774,11 +799,14 @@
             state.touchStartY = 0;
         }
 
-        // Prevent default touch behaviors
-        function preventDefaultTouch(e) {
-            if (e.target === elements.canvas || e.target === elements.pdfDisplay) {
+        // Prevent scrolling but allow zoom gestures
+        function handleTouchMove(e) {
+            // Only prevent scrolling if it's not a zoom gesture (pinch zoom)
+            if (e.touches.length === 1) {
+                // Single touch - prevent scrolling
                 e.preventDefault();
             }
+            // For 2+ touches (pinch zoom), allow the default behavior
         }
 
         // Setup Event Listeners
@@ -797,13 +825,17 @@
                 if (e.key === 'Enter') goToPage();
             });
             
-            // Touch Events
+            // Touch Events - Prevent scrolling but allow zoom
             elements.pdfDisplay.addEventListener('touchstart', handleTouchStart, { passive: true });
             elements.pdfDisplay.addEventListener('touchend', handleTouchEnd, { passive: false });
+            elements.pdfDisplay.addEventListener('touchmove', handleTouchMove, { passive: false });
             
-            // Prevent default touch behaviors
-            elements.pdfDisplay.addEventListener('touchmove', preventDefaultTouch, { passive: false });
-            elements.canvas.addEventListener('touchmove', preventDefaultTouch, { passive: false });
+            // Prevent scrolling on canvas
+            elements.canvas.addEventListener('touchmove', (e) => {
+                if (e.touches.length === 1) {
+                    e.preventDefault();
+                }
+            }, { passive: false });
             
             // Keyboard Navigation
             document.addEventListener('keydown', (e) => {
@@ -877,15 +909,19 @@
                 }
             });
             
-            // Mouse wheel zoom
+            // Mouse wheel zoom - allow zoom but prevent scrolling
             elements.pdfDisplay.addEventListener('wheel', (e) => {
                 if (e.ctrlKey || e.metaKey) {
+                    // Ctrl/Cmd + wheel for zoom
                     e.preventDefault();
                     if (e.deltaY < 0) {
                         zoomIn();
                     } else {
                         zoomOut();
                     }
+                } else {
+                    // Regular wheel - prevent scrolling
+                    e.preventDefault();
                 }
             }, { passive: false });
         }
